@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wireworld Cellular Automaton</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  canvas { cursor: crosshair; image-rendering: pixelated; display: block; }
+  body { user-select: none; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen p-3">
+<div class="max-w-5xl mx-auto">
+  <h1 class="text-2xl font-bold text-orange-400 mb-1">Wireworld Logic Gate Cellular Automaton</h1>
+  <p class="text-gray-400 text-sm mb-3">Draw conductors, launch electrons, build logic gates.</p>
+
+  <div class="flex flex-wrap gap-2 mb-3 items-center">
+    <!-- Tools -->
+    <div class="flex gap-1">
+      <button id="toolConductor" onclick="setTool('conductor')" class="px-3 py-1.5 rounded text-sm font-semibold bg-orange-600 text-white" aria-pressed="true">Conductor</button>
+      <button id="toolHead" onclick="setTool('head')" class="px-3 py-1.5 rounded text-sm font-semibold bg-gray-700 text-blue-300" aria-pressed="false">Electron Head</button>
+      <button id="toolTail" onclick="setTool('tail')" class="px-3 py-1.5 rounded text-sm font-semibold bg-gray-700 text-white" aria-pressed="false">Electron Tail</button>
+      <button id="toolEraser" onclick="setTool('eraser')" class="px-3 py-1.5 rounded text-sm font-semibold bg-gray-700 text-gray-300" aria-pressed="false">Eraser</button>
+    </div>
+
+    <div class="w-px h-6 bg-gray-700"></div>
+
+    <!-- Playback -->
+    <button onclick="togglePlay()" id="playBtn" class="px-3 py-1.5 rounded text-sm font-semibold bg-green-700 hover:bg-green-600 text-white transition">▶ Play</button>
+    <button onclick="step()" class="px-3 py-1.5 rounded text-sm font-semibold bg-gray-700 hover:bg-gray-600 text-white transition">Step</button>
+    <button onclick="clearGrid()" class="px-3 py-1.5 rounded text-sm font-semibold bg-red-900 hover:bg-red-800 text-white transition">Clear</button>
+
+    <div class="flex items-center gap-2">
+      <label for="speedSlider" class="text-xs text-gray-400">Speed</label>
+      <input type="range" id="speedSlider" min="1" max="20" value="5" class="w-20 accent-orange-400" aria-label="Simulation speed">
+      <span id="speedLabel" class="text-xs text-gray-400 w-8">5</span>
+    </div>
+
+    <div class="w-px h-6 bg-gray-700"></div>
+
+    <!-- Presets -->
+    <span class="text-xs text-gray-500">Examples:</span>
+    <button onclick="loadPreset('and')" class="px-3 py-1.5 rounded text-xs bg-gray-800 hover:bg-gray-700 text-orange-300">AND gate</button>
+    <button onclick="loadPreset('or')" class="px-3 py-1.5 rounded text-xs bg-gray-800 hover:bg-gray-700 text-orange-300">OR gate</button>
+    <button onclick="loadPreset('not')" class="px-3 py-1.5 rounded text-xs bg-gray-800 hover:bg-gray-700 text-orange-300">NOT gate</button>
+  </div>
+
+  <!-- Legend -->
+  <div class="flex gap-4 mb-3 text-xs">
+    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-black border border-gray-600 inline-block"></span> Empty</span>
+    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-orange-500 inline-block"></span> Conductor</span>
+    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-blue-500 inline-block"></span> Electron Head</span>
+    <span class="flex items-center gap-1"><span class="w-3 h-3 bg-gray-100 inline-block"></span> Electron Tail</span>
+  </div>
+
+  <div class="border border-gray-700 rounded-xl overflow-hidden inline-block">
+    <canvas id="canvas" width="800" height="600"></canvas>
+  </div>
+
+  <div class="text-xs text-gray-500 mt-2">Gen: <span id="genCount">0</span> | Grid: 40×30 cells | Rules: conductor→head if 1-2 neighbors are heads; head→tail; tail→conductor</div>
+</div>
+
+<script>
+const COLS = 40, ROWS = 30, CELL = 20;
+const EMPTY = 0, CONDUCTOR = 1, HEAD = 2, TAIL = 3;
+const COLORS = ['#111827','#f97316','#3b82f6','#f1f5f9'];
+
+let grid = Array.from({length:ROWS}, () => new Uint8Array(COLS));
+let nextGrid = Array.from({length:ROWS}, () => new Uint8Array(COLS));
+let tool = 'conductor';
+let isPlaying = false;
+let animId = null;
+let lastTime = 0;
+let gen = 0;
+let mouseDown = false;
+let speed = 5;
+
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+
+function setTool(t) {
+  tool = t;
+  ['conductor','head','tail','eraser'].forEach(id => {
+    const btn = document.getElementById('tool' + id.charAt(0).toUpperCase() + id.slice(1));
+    btn.className = btn.className.replace(' bg-orange-600',' bg-gray-700').replace(' bg-gray-700',' bg-gray-700');
+    btn.setAttribute('aria-pressed','false');
+  });
+  const active = document.getElementById('tool' + t.charAt(0).toUpperCase() + t.slice(1));
+  active.className = active.className.replace('bg-gray-700','bg-orange-600');
+  active.setAttribute('aria-pressed','true');
+}
+
+function draw() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      ctx.fillStyle = COLORS[grid[r][c]];
+      ctx.fillRect(c * CELL, r * CELL, CELL, CELL);
+    }
+  }
+  // Grid lines
+  ctx.strokeStyle = '#1f2937';
+  ctx.lineWidth = 0.5;
+  for (let c = 0; c <= COLS; c++) { ctx.beginPath(); ctx.moveTo(c*CELL,0); ctx.lineTo(c*CELL,ROWS*CELL); ctx.stroke(); }
+  for (let r = 0; r <= ROWS; r++) { ctx.beginPath(); ctx.moveTo(0,r*CELL); ctx.lineTo(COLS*CELL,r*CELL); ctx.stroke(); }
+}
+
+function step() {
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = grid[r][c];
+      if (cell === EMPTY) { nextGrid[r][c] = EMPTY; continue; }
+      if (cell === HEAD) { nextGrid[r][c] = TAIL; continue; }
+      if (cell === TAIL) { nextGrid[r][c] = CONDUCTOR; continue; }
+      // CONDUCTOR: count head neighbors
+      let heads = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr===0&&dc===0) continue;
+          const nr = r+dr, nc = c+dc;
+          if (nr>=0&&nr<ROWS&&nc>=0&&nc<COLS&&grid[nr][nc]===HEAD) heads++;
+        }
+      }
+      nextGrid[r][c] = (heads===1||heads===2) ? HEAD : CONDUCTOR;
+    }
+  }
+  [grid, nextGrid] = [nextGrid, grid];
+  gen++;
+  document.getElementById('genCount').textContent = gen;
+  draw();
+}
+
+function loop(ts) {
+  if (!isPlaying) return;
+  const interval = 1000 / speed;
+  if (ts - lastTime >= interval) {
+    step();
+    lastTime = ts;
+  }
+  animId = requestAnimationFrame(loop);
+}
+
+function togglePlay() {
+  isPlaying = !isPlaying;
+  document.getElementById('playBtn').textContent = isPlaying ? '⏸ Pause' : '▶ Play';
+  document.getElementById('playBtn').className = isPlaying
+    ? 'px-3 py-1.5 rounded text-sm font-semibold bg-yellow-700 hover:bg-yellow-600 text-white transition'
+    : 'px-3 py-1.5 rounded text-sm font-semibold bg-green-700 hover:bg-green-600 text-white transition';
+  if (isPlaying) animId = requestAnimationFrame(loop);
+}
+
+function clearGrid() {
+  isPlaying = false;
+  document.getElementById('playBtn').textContent = '▶ Play';
+  document.getElementById('playBtn').className = 'px-3 py-1.5 rounded text-sm font-semibold bg-green-700 hover:bg-green-600 text-white transition';
+  grid = Array.from({length:ROWS}, () => new Uint8Array(COLS));
+  nextGrid = Array.from({length:ROWS}, () => new Uint8Array(COLS));
+  gen = 0;
+  document.getElementById('genCount').textContent = 0;
+  draw();
+}
+
+function setCellAt(x, y) {
+  const c = Math.floor(x / CELL), r = Math.floor(y / CELL);
+  if (c < 0 || c >= COLS || r < 0 || r >= ROWS) return;
+  if (tool === 'conductor') grid[r][c] = CONDUCTOR;
+  else if (tool === 'head') grid[r][c] = HEAD;
+  else if (tool === 'tail') grid[r][c] = TAIL;
+  else grid[r][c] = EMPTY;
+  draw();
+}
+
+canvas.addEventListener('mousedown', e => { mouseDown = true; setCellAt(e.offsetX, e.offsetY); });
+canvas.addEventListener('mousemove', e => { if (mouseDown) setCellAt(e.offsetX, e.offsetY); });
+canvas.addEventListener('mouseup', () => mouseDown = false);
+canvas.addEventListener('mouseleave', () => mouseDown = false);
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  setCellAt((t.clientX - rect.left) * scaleX, (t.clientY - rect.top) * scaleY);
+}, {passive:false});
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches[0];
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  setCellAt((t.clientX - rect.left) * scaleX, (t.clientY - rect.top) * scaleY);
+}, {passive:false});
+
+document.getElementById('speedSlider').addEventListener('input', function() {
+  speed = parseInt(this.value);
+  document.getElementById('speedLabel').textContent = speed;
+});
+
+// Presets
+function setCell(r, c, state) { if(r>=0&&r<ROWS&&c>=0&&c<COLS) grid[r][c]=state; }
+
+function loadPreset(name) {
+  clearGrid();
+
+  if (name === 'and') {
+    // AND gate: two inputs, only fires when both have electrons
+    // Input wire 1 (top)
+    for(let c=2;c<=15;c++) setCell(5,c,CONDUCTOR);
+    // Input wire 2 (bottom)
+    for(let c=2;c<=15;c++) setCell(12,c,CONDUCTOR);
+    // Merge into AND structure
+    for(let r=5;r<=12;r++) setCell(r,15,CONDUCTOR);
+    // Output
+    for(let c=15;c<=28;c++) setCell(8,c,CONDUCTOR);
+    // Electron signals on both inputs
+    setCell(5,4,HEAD); setCell(5,3,TAIL);
+    setCell(12,4,HEAD); setCell(12,3,TAIL);
+    // Label: comment in console
+  } else if (name === 'or') {
+    // OR gate
+    for(let c=2;c<=12;c++) setCell(5,c,CONDUCTOR);
+    for(let c=2;c<=12;c++) setCell(12,c,CONDUCTOR);
+    // Both wires lead to shared output
+    for(let r=5;r<=12;r++) setCell(r,12,CONDUCTOR);
+    for(let c=12;c<=26;c++) setCell(8,c,CONDUCTOR);
+    // Electron on top input only
+    setCell(5,4,HEAD); setCell(5,3,TAIL);
+  } else if (name === 'not') {
+    // NOT gate: uses diode + loop
+    // Input
+    for(let c=2;c<=8;c++) setCell(8,c,CONDUCTOR);
+    // Loop (NOT inverter pattern)
+    for(let c=8;c<=14;c++) setCell(6,c,CONDUCTOR);
+    for(let c=8;c<=14;c++) setCell(10,c,CONDUCTOR);
+    setCell(7,8,CONDUCTOR); setCell(9,8,CONDUCTOR);
+    setCell(7,14,CONDUCTOR); setCell(9,14,CONDUCTOR);
+    setCell(6,14,CONDUCTOR); setCell(10,14,CONDUCTOR);
+    // Output
+    for(let c=14;c<=26;c++) setCell(8,c,CONDUCTOR);
+    // Electron in loop
+    setCell(6,10,HEAD); setCell(6,9,TAIL);
+  }
+  draw();
+}
+
+setTool('conductor');
+draw();
+</script>
+</body>
+</html>
